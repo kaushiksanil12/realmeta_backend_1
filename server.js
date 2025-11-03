@@ -12,26 +12,28 @@ console.log('🔑 API Keys Check:');
 console.log('   Google Cloud API Key:', process.env.GOOGLE_CLOUD_API_KEY ? '✅ Loaded' : '❌ Missing');
 console.log('   Groq API Key:', process.env.GROK_API_KEY ? '✅ Loaded' : '❌ Missing');
 
-// ===== CORS CONFIGURATION =====
-const corsOptions = {
-  origin: process.env.FRONTEND_URL || '*',
-  credentials: true,
+// ===== CORS CONFIGURATION - ALLOW ALL ORIGINS =====
+app.use(cors({
+  origin: '*', // Allow all origins for development
+  credentials: false,
   optionsSuccessStatus: 200,
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-};
+}));
 
-app.use(cors(corsOptions));
+// Handle preflight requests
+app.options('*', cors());
+
 app.use(express.json());
 
-// ===== MULTER - MEMORY STORAGE (No Disk Storage) =====
+// ===== MULTER - MEMORY STORAGE =====
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
-// Image classification endpoint
-app.post('/api/classify', upload.single('image'), async (req, res) => {
+// ===== NEW ENDPOINT: /api/scan/vision (for your frontend) =====
+app.post('/api/scan/vision', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image uploaded' });
@@ -39,7 +41,7 @@ app.post('/api/classify', upload.single('image'), async (req, res) => {
 
     console.log(`\n📸 Processing image: ${req.file.originalname}`);
 
-    // Convert buffer directly to base64 (no file saved to disk)
+    // Convert buffer directly to base64
     const base64Image = req.file.buffer.toString('base64');
 
     // Step 1: Google Cloud Vision - Web Detection to identify artwork
@@ -78,7 +80,55 @@ app.post('/api/classify', upload.single('image'), async (req, res) => {
   }
 });
 
-// Google Cloud Vision - Web Detection (to identify painting name)
+// ===== ORIGINAL ENDPOINT: /api/classify (for curl testing) =====
+app.post('/api/classify', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image uploaded' });
+    }
+
+    console.log(`\n📸 Processing image: ${req.file.originalname}`);
+
+    // Convert buffer directly to base64
+    const base64Image = req.file.buffer.toString('base64');
+
+    // Step 1: Google Cloud Vision - Web Detection to identify artwork
+    console.log('🌐 Using Web Detection to identify artwork...');
+    const artworkName = await webDetection(base64Image);
+    console.log(`✅ Identified artwork: ${artworkName}`);
+
+    // Step 2: Get additional vision data
+    const labels = await labelDetection(base64Image);
+    const objects = await objectLocalization(base64Image);
+    const detectedText = await textDetection(base64Image);
+
+    // Step 3: Groq Cloud - Generate detailed artwork description
+    console.log(`🤖 Generating artwork details with Groq for: ${artworkName}`);
+    const groqDescription = await generateArtworkDescription(artworkName);
+
+    // Send response
+    res.json({
+      status: 'success',
+      timestamp: new Date().toISOString(),
+      detectedArtwork: artworkName,
+      visionAnalysis: {
+        labels: labels.slice(0, 10),
+        objects: objects.slice(0, 10),
+        detectedText: detectedText.substring(0, 500)
+      },
+      artworkDetails: groqDescription
+    });
+
+  } catch (error) {
+    console.error('❌ Error:', error.message);
+    res.status(500).json({ 
+      error: 'Image classification failed', 
+      details: error.message 
+    });
+  }
+});
+
+// Google Cloud Vision - Web Detection
 async function webDetection(base64Image) {
   try {
     const response = await axios.post(
@@ -227,8 +277,6 @@ async function generateArtworkDescription(artworkName) {
     }
 
     console.log('📤 Sending request to Groq API...');
-    console.log('   Model: llama-3.3-70b-versatile');
-    console.log('   Artwork: ' + artworkName);
 
     const response = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
@@ -320,5 +368,6 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`\n🚀 Server running on http://localhost:${PORT}`);
   console.log(`📊 Classification endpoint: POST http://localhost:${PORT}/api/classify`);
+  console.log(`📊 Vision scan endpoint: POST http://localhost:${PORT}/api/scan/vision`);
   console.log(`💚 Health check: GET http://localhost:${PORT}/api/health`);
 });
