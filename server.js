@@ -1,6 +1,5 @@
 const express = require('express');
 const multer = require('multer');
-const cors = require('cors');
 const axios = require('axios');
 require('dotenv').config();
 
@@ -12,115 +11,98 @@ console.log('🔑 API Keys Check:');
 console.log('   Google Cloud API Key:', process.env.GOOGLE_CLOUD_API_KEY ? '✅ Loaded' : '❌ Missing');
 console.log('   Groq API Key:', process.env.GROK_API_KEY ? '✅ Loaded' : '❌ Missing');
 
-// ===== CORS CONFIGURATION - ALLOW ALL ORIGINS =====
-app.use(cors({
-  origin: '*', // Allow all origins for development
-  credentials: false,
-  optionsSuccessStatus: 200,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-// Handle preflight requests
-app.options('*', cors());
+// ===== EXPLICIT CORS HEADERS =====
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
 
 app.use(express.json());
 
 // ===== MULTER - MEMORY STORAGE =====
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
-// ===== NEW ENDPOINT: /api/scan/vision (for your frontend) =====
+// Shared image processing logic
+async function processImage(base64Image, artworkName) {
+  const labels = await labelDetection(base64Image);
+  const objects = await objectLocalization(base64Image);
+  const detectedText = await textDetection(base64Image);
+  const groqDescription = await generateArtworkDescription(artworkName);
+
+  return {
+    status: 'success',
+    timestamp: new Date().toISOString(),
+    detectedArtwork: artworkName,
+    visionAnalysis: {
+      labels: labels.slice(0, 10),
+      objects: objects.slice(0, 10),
+      detectedText: detectedText.substring(0, 500)
+    },
+    artworkDetails: groqDescription
+  };
+}
+
+// ===== ENDPOINT: /api/scan/vision (Frontend calls this) =====
 app.post('/api/scan/vision', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No image uploaded' });
+      return res.status(400).json({ 
+        status: 'error',
+        error: 'No image uploaded' 
+      });
     }
 
-    console.log(`\n📸 Processing image: ${req.file.originalname}`);
+    console.log(`\n📸 Vision API: Processing ${req.file.originalname}`);
 
-    // Convert buffer directly to base64
     const base64Image = req.file.buffer.toString('base64');
 
-    // Step 1: Google Cloud Vision - Web Detection to identify artwork
-    console.log('🌐 Using Web Detection to identify artwork...');
+    console.log('🌐 Web Detection...');
     const artworkName = await webDetection(base64Image);
-    console.log(`✅ Identified artwork: ${artworkName}`);
+    console.log(`✅ Identified: ${artworkName}`);
 
-    // Step 2: Get additional vision data
-    const labels = await labelDetection(base64Image);
-    const objects = await objectLocalization(base64Image);
-    const detectedText = await textDetection(base64Image);
-
-    // Step 3: Groq Cloud - Generate detailed artwork description
-    console.log(`🤖 Generating artwork details with Groq for: ${artworkName}`);
-    const groqDescription = await generateArtworkDescription(artworkName);
-
-    // Send response
-    res.json({
-      status: 'success',
-      timestamp: new Date().toISOString(),
-      detectedArtwork: artworkName,
-      visionAnalysis: {
-        labels: labels.slice(0, 10),
-        objects: objects.slice(0, 10),
-        detectedText: detectedText.substring(0, 500)
-      },
-      artworkDetails: groqDescription
-    });
+    const result = await processImage(base64Image, artworkName);
+    res.json(result);
 
   } catch (error) {
-    console.error('❌ Error:', error.message);
+    console.error('❌ Vision API Error:', error.message);
     res.status(500).json({ 
+      status: 'error',
       error: 'Image classification failed', 
       details: error.message 
     });
   }
 });
 
-// ===== ORIGINAL ENDPOINT: /api/classify (for curl testing) =====
+// ===== ENDPOINT: /api/classify (Alternative endpoint) =====
 app.post('/api/classify', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image uploaded' });
     }
 
-    console.log(`\n📸 Processing image: ${req.file.originalname}`);
+    console.log(`\n📸 Classify API: Processing ${req.file.originalname}`);
 
-    // Convert buffer directly to base64
     const base64Image = req.file.buffer.toString('base64');
 
-    // Step 1: Google Cloud Vision - Web Detection to identify artwork
-    console.log('🌐 Using Web Detection to identify artwork...');
+    console.log('🌐 Web Detection...');
     const artworkName = await webDetection(base64Image);
-    console.log(`✅ Identified artwork: ${artworkName}`);
+    console.log(`✅ Identified: ${artworkName}`);
 
-    // Step 2: Get additional vision data
-    const labels = await labelDetection(base64Image);
-    const objects = await objectLocalization(base64Image);
-    const detectedText = await textDetection(base64Image);
-
-    // Step 3: Groq Cloud - Generate detailed artwork description
-    console.log(`🤖 Generating artwork details with Groq for: ${artworkName}`);
-    const groqDescription = await generateArtworkDescription(artworkName);
-
-    // Send response
-    res.json({
-      status: 'success',
-      timestamp: new Date().toISOString(),
-      detectedArtwork: artworkName,
-      visionAnalysis: {
-        labels: labels.slice(0, 10),
-        objects: objects.slice(0, 10),
-        detectedText: detectedText.substring(0, 500)
-      },
-      artworkDetails: groqDescription
-    });
+    const result = await processImage(base64Image, artworkName);
+    res.json(result);
 
   } catch (error) {
-    console.error('❌ Error:', error.message);
+    console.error('❌ Classify API Error:', error.message);
     res.status(500).json({ 
       error: 'Image classification failed', 
       details: error.message 
@@ -136,15 +118,8 @@ async function webDetection(base64Image) {
       {
         requests: [
           {
-            image: {
-              content: base64Image
-            },
-            features: [
-              {
-                type: 'WEB_DETECTION',
-                maxResults: 10
-              }
-            ]
+            image: { content: base64Image },
+            features: [{ type: 'WEB_DETECTION', maxResults: 10 }]
           }
         ]
       }
@@ -152,12 +127,12 @@ async function webDetection(base64Image) {
 
     const webDetectionData = response.data.responses[0].webDetection;
     
-    if (webDetectionData && webDetectionData.webEntities && webDetectionData.webEntities.length > 0) {
+    if (webDetectionData?.webEntities?.length > 0) {
       const relevantEntity = webDetectionData.webEntities
         .filter(entity => entity.description && entity.score > 0.5)
         .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
       
-      if (relevantEntity && relevantEntity.description) {
+      if (relevantEntity?.description) {
         return relevantEntity.description;
       }
     }
@@ -179,15 +154,8 @@ async function labelDetection(base64Image) {
       {
         requests: [
           {
-            image: {
-              content: base64Image
-            },
-            features: [
-              {
-                type: 'LABEL_DETECTION',
-                maxResults: 10
-              }
-            ]
+            image: { content: base64Image },
+            features: [{ type: 'LABEL_DETECTION', maxResults: 10 }]
           }
         ]
       }
@@ -211,15 +179,8 @@ async function objectLocalization(base64Image) {
       {
         requests: [
           {
-            image: {
-              content: base64Image
-            },
-            features: [
-              {
-                type: 'OBJECT_LOCALIZATION',
-                maxResults: 10
-              }
-            ]
+            image: { content: base64Image },
+            features: [{ type: 'OBJECT_LOCALIZATION', maxResults: 10 }]
           }
         ]
       }
@@ -243,14 +204,8 @@ async function textDetection(base64Image) {
       {
         requests: [
           {
-            image: {
-              content: base64Image
-            },
-            features: [
-              {
-                type: 'TEXT_DETECTION'
-              }
-            ]
+            image: { content: base64Image },
+            features: [{ type: 'TEXT_DETECTION' }]
           }
         ]
       }
@@ -269,14 +224,14 @@ async function generateArtworkDescription(artworkName) {
     const apiKey = process.env.GROK_API_KEY;
     
     if (!apiKey) {
-      console.error('❌ GROK_API_KEY not found in environment');
+      console.error('❌ GROK_API_KEY not found');
       return { 
         title: artworkName,
         error: 'Groq API key not configured'
       };
     }
 
-    console.log('📤 Sending request to Groq API...');
+    console.log('📤 Groq: Generating description...');
 
     const response = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
@@ -308,22 +263,10 @@ async function generateArtworkDescription(artworkName) {
 
     try {
       const jsonMatch = content.match(/\{[\s\S]*\}/);
-      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-      
-      if (parsed) {
-        return parsed;
-      } else {
-        return { 
-          title: artworkName, 
-          description: content 
-        };
-      }
+      return jsonMatch ? JSON.parse(jsonMatch[0]) : { title: artworkName, description: content };
     } catch (e) {
-      console.log('⚠️ Failed to parse JSON response');
-      return { 
-        title: artworkName, 
-        description: content 
-      };
+      console.log('⚠️ Failed to parse JSON, returning as text');
+      return { title: artworkName, description: content };
     }
   } catch (error) {
     console.error('❌ Groq Error:', error.response?.status, error.message);
@@ -366,8 +309,8 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📊 Classification endpoint: POST http://localhost:${PORT}/api/classify`);
-  console.log(`📊 Vision scan endpoint: POST http://localhost:${PORT}/api/scan/vision`);
-  console.log(`💚 Health check: GET http://localhost:${PORT}/api/health`);
+  console.log(`\n🚀 Server running on port ${PORT}`);
+  console.log(`📊 Vision API: POST /api/scan/vision (Frontend)`);
+  console.log(`📊 Classify API: POST /api/classify (Curl/Testing)`);
+  console.log(`💚 Health: GET /api/health`);
 });
